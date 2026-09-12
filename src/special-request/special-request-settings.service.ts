@@ -1,7 +1,16 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  OnModuleInit,
+} from '@nestjs/common';
 import { isValidIanaTimeZone } from '../common/merchant-open-status';
 import { PrismaService } from '../prisma/prisma.service';
 import { UpdateSpecialRequestSettingsDto } from './dto/update-special-request-settings.dto';
+import {
+  ensureSpecialRequestSchema,
+  isMissingRelationError,
+} from './ensure-special-request-schema';
 import {
   DEFAULT_SPECIAL_REQUEST_BUY_FEE,
   DEFAULT_SPECIAL_REQUEST_NOW_MAX_MINUTES,
@@ -19,14 +28,20 @@ export type SpecialRequestSettingsView = {
 };
 
 @Injectable()
-export class SpecialRequestSettingsService {
+export class SpecialRequestSettingsService implements OnModuleInit {
+  private readonly log = new Logger(SpecialRequestSettingsService.name);
+
   constructor(private readonly prisma: PrismaService) {}
+
+  async onModuleInit() {
+    await ensureSpecialRequestSchema(this.prisma);
+  }
 
   private roundMoney(value: number): number {
     return Math.round(value * 100) / 100;
   }
 
-  async ensureSettings() {
+  private async findOrCreateSettings() {
     const existing = await this.prisma.specialRequestSetting.findUnique({
       where: { id: 1 },
     });
@@ -43,6 +58,21 @@ export class SpecialRequestSettingsService {
         buyFee: DEFAULT_SPECIAL_REQUEST_BUY_FEE,
       },
     });
+  }
+
+  async ensureSettings() {
+    try {
+      return await this.findOrCreateSettings();
+    } catch (err) {
+      if (!isMissingRelationError(err)) {
+        throw err;
+      }
+      this.log.warn(
+        'special_request_settings was missing; creating tables and retrying',
+      );
+      await ensureSpecialRequestSchema(this.prisma);
+      return this.findOrCreateSettings();
+    }
   }
 
   async getSettings(): Promise<SpecialRequestSettingsView> {
